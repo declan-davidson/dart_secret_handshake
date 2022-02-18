@@ -9,15 +9,7 @@ import 'package:libsodium/libsodium.dart';
 import 'package:dart_secret_handshake/boxstream.dart';
 
 void main(List<String> arguments) async {
-  print("start");
+  print("Starting server");
   Server server = Server(Sodium.cryptoSignSeedKeypair(defaultServerSeed));
-  Client client = Client("127.0.0.1", 4567, Sodium.cryptoSignSeedKeypair(defaultClientSeed), defaultServerLongtermKeys.pk);
-
   server.start();
-  await client.start();
-
-  print("Start of send block");
-  client.send(Uint8List.fromList((List<int>.filled(7000, 0))));
-  client.send(Uint8List.fromList((List<int>.filled(800, 1))));
-  client.send(Uint8List.fromList((List<int>.filled(2000, 2))));
 }

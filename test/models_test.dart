@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:dart_secret_handshake/models.dart';
+import 'package:dart_secret_handshake/crypto.dart';
 import 'package:dart_secret_handshake/util.dart';
 import 'package:libsodium/libsodium.dart';
 import 'dart:typed_data';
@@ -7,16 +7,16 @@ import 'dart:typed_data';
 void main() {
   Sodium.init();
 
-  late Server server;
-  late Client client;
+  late ServerCrypto server;
+  late ClientCrypto client;
   KeyPair serverLongtermKeys = Sodium.cryptoSignSeedKeypair(defaultServerSeed);
   KeyPair serverEphemeralKeys = Sodium.cryptoBoxSeedKeypair(defaultServerEphemeralSeed);
   KeyPair clientLongtermKeys = Sodium.cryptoSignSeedKeypair(defaultClientSeed);
   KeyPair clientEphemeralKeys = Sodium.cryptoBoxSeedKeypair(defaultClientEphemeralSeed);
 
   setUp(() {
-    server = Server(longtermKeys: serverLongtermKeys, ephemeralKeys: serverEphemeralKeys);
-    client = Client(longtermKeys: clientLongtermKeys, remotePk: serverLongtermKeys.pk, ephemeralKeys: clientEphemeralKeys);
+    server = ServerCrypto(longtermKeys: serverLongtermKeys, ephemeralKeys: serverEphemeralKeys);
+    client = ClientCrypto(longtermKeys: clientLongtermKeys, remotePk: serverLongtermKeys.pk, ephemeralKeys: clientEphemeralKeys);
   });
 
   group("Server:", () {

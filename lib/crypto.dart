@@ -3,19 +3,39 @@ import 'package:libsodium/libsodium.dart';
 import 'util.dart';
 import 'package:crypto/crypto.dart' show sha256;
 
-abstract class Peer {
+Uint8List generateSecretBox(Uint8List secretBoxKey, Uint8List secretBoxMessage, { Uint8List? additionalSecretBoxMessageElement, Uint8List? nonce }){
+  Uint8List finalSecretBoxMessage;
+  additionalSecretBoxMessageElement != null ? finalSecretBoxMessage = toBytes([secretBoxMessage, additionalSecretBoxMessageElement]) : finalSecretBoxMessage = secretBoxMessage;
+
+  return Sodium.cryptoSecretboxEasy(finalSecretBoxMessage, (nonce != null ? nonce : zeroNonce), secretBoxKey);
+}
+
+Uint8List generateHash(List<Uint8List> elements){
+  List<int> hashMaterial = toBytes(elements).toList();
+  return Uint8List.fromList(sha256.convert(hashMaterial).bytes);
+}
+
+Uint8List openSecretBox(Uint8List secretBox, Uint8List secretBoxKey, Uint8List secretBoxNonce){
+  return Sodium.cryptoSecretboxOpenEasy(secretBox, secretBoxNonce, secretBoxKey);
+}
+
+abstract class PeerCrypto {
   KeyPair longtermKeys;
   late KeyPair ephemeralKeys;
   late Uint8List remotePk;
   late Uint8List remoteEphemeralPk;
   Uint8List networkId = defaultNetworkId;
+  late Uint8List writerBoxStreamKey;
+  late Uint8List writerBoxStreamNonce;
+  late Uint8List readerBoxStreamKey;
+  late Uint8List readerBoxStreamNonce;
   late Uint8List detachedSignatureA;
   late Uint8List sharedSecret_ab;
   late Uint8List sharedSecret_aB;
   late Uint8List sharedSecret_Ab;
   late Uint8List hashedSharedSecret_ab;
 
-  Peer({ required this.longtermKeys, Uint8List? remotePk, Uint8List? networkId, KeyPair? ephemeralKeys }){
+  PeerCrypto({ required this.longtermKeys, Uint8List? remotePk, Uint8List? networkId, KeyPair? ephemeralKeys }){
     if(remotePk != null) this.remotePk = remotePk;
     if(networkId != null) this.networkId = networkId; 
     ephemeralKeys != null ? this.ephemeralKeys = ephemeralKeys : this.ephemeralKeys = Sodium.cryptoBoxSeedKeypair(RandomBytes.buffer(32));  
@@ -49,56 +69,11 @@ abstract class Peer {
 
   bool verifyAuthenticate(Uint8List secretBox);
 
-  Uint8List deriveSharedSecret({ required Uint8List publicKey, required Uint8List secretKey }){
-    return Sodium.cryptoScalarmult(secretKey, publicKey);
-  }
-
-  void deriveSharedSecret_ab(){
-    sharedSecret_ab = deriveSharedSecret(publicKey: remoteEphemeralPk, secretKey: ephemeralKeys.sk);
-    hashedSharedSecret_ab = Uint8List.fromList(sha256.convert(sharedSecret_ab.toList()).bytes);
-  }
-
-  void deriveSharedSecret_aB();
-
-  void deriveSharedSecret_Ab();
-
-  Uint8List toBytes(List<Uint8List> elements){
-    BytesBuilder bb = BytesBuilder();
-
-    for(Uint8List element in elements){
-      bb.add(element);
-    }
-
-    Uint8List bytes = bb.toBytes();
-    bb.clear(); //This may be unnecessary
-    return bytes;
-  }
-
-  Uint8List generateDetachedSignature(List<Uint8List> messageElements){
-    Uint8List detachedSignatureMessage;
-    
-    detachedSignatureMessage = toBytes(messageElements);
-    return Sodium.cryptoSignDetached(detachedSignatureMessage, longtermKeys.sk);
-  }
-
-  Uint8List generateSecretBox(List<Uint8List> keyElements, Uint8List detachedSignature, [ Uint8List? additionalSecretBoxMessageElement ]){
-    Uint8List secretBoxKey, secretBoxMessage;
-
-    secretBoxKey = generateSecretBoxKey(keyElements);
-    additionalSecretBoxMessageElement != null ? secretBoxMessage = toBytes([detachedSignature, additionalSecretBoxMessageElement]) : secretBoxMessage = detachedSignature;
-    return Sodium.cryptoSecretboxEasy(secretBoxMessage, zeroNonce, secretBoxKey);
-  }
-
-  Uint8List generateSecretBoxKey(List<Uint8List> keyElements){
-    Uint8List secretBoxKeyMaterial = toBytes(keyElements);
-    return Uint8List.fromList(sha256.convert(secretBoxKeyMaterial.toList()).bytes);
-  }
-
   bool verifyAuthenticationBase(Uint8List secretBox, List<Uint8List> keyElements, List<Uint8List> expectedDetachedSignatureMessageElements){
     Uint8List secretBoxKey, secretBoxContents, expectedDetachedSignatureMessage;
     Uint8List? detachedSignature;
 
-    secretBoxKey = generateSecretBoxKey(keyElements);
+    secretBoxKey = generateHash(keyElements);
     secretBoxContents = Sodium.cryptoSecretboxOpenEasy(secretBox, zeroNonce, secretBoxKey);
 
     if(secretBoxContents.lengthInBytes == 96){
@@ -113,17 +88,49 @@ abstract class Peer {
     expectedDetachedSignatureMessage = toBytes(expectedDetachedSignatureMessageElements);
     return Sodium.cryptoSignVerifyDetached(detachedSignature, expectedDetachedSignatureMessage, remotePk) == 0;
   }
+
+  Uint8List deriveSharedSecret({ required Uint8List publicKey, required Uint8List secretKey }){
+    return Sodium.cryptoScalarmult(secretKey, publicKey);
+  }
+
+  void deriveSharedSecret_ab(){
+    sharedSecret_ab = deriveSharedSecret(publicKey: remoteEphemeralPk, secretKey: ephemeralKeys.sk);
+    hashedSharedSecret_ab = generateHash([sharedSecret_ab]);
+  }
+
+  void deriveSharedSecret_aB();
+
+  void deriveSharedSecret_Ab();
+
+  Uint8List generateDetachedSignature(List<Uint8List> messageElements){
+    Uint8List detachedSignatureMessage;
+    
+    detachedSignatureMessage = toBytes(messageElements);
+    return Sodium.cryptoSignDetached(detachedSignatureMessage, longtermKeys.sk);
+  }
+
+  void deriveBoxStreamSecrets(){
+    Uint8List doubleHashedSecretBoxKeyBase = generateHash([generateHash([networkId, sharedSecret_ab, sharedSecret_aB, sharedSecret_Ab])]);
+
+    //WRITER
+    writerBoxStreamKey = generateHash([doubleHashedSecretBoxKeyBase, remotePk]);
+    writerBoxStreamNonce = Sodium.cryptoAuth(remoteEphemeralPk, networkId).sublist(0, 24);
+
+    //READER
+    readerBoxStreamKey = generateHash([doubleHashedSecretBoxKeyBase, longtermKeys.pk]);
+    readerBoxStreamNonce = Sodium.cryptoAuth(ephemeralKeys.pk, networkId).sublist(0, 24);
+  }
 }
 
-class Client extends Peer {
-  Client({ required KeyPair longtermKeys, required Uint8List remotePk, Uint8List? networkId, KeyPair? ephemeralKeys }) : 
+class ClientCrypto extends PeerCrypto {
+  ClientCrypto({ required KeyPair longtermKeys, required Uint8List remotePk, Uint8List? networkId, KeyPair? ephemeralKeys }) : 
     super(longtermKeys: longtermKeys, remotePk: remotePk, networkId: networkId, ephemeralKeys: ephemeralKeys);
   
   @override
   Uint8List buildAuthenticate(){
     detachedSignatureA = generateDetachedSignature([networkId, remotePk, hashedSharedSecret_ab]);
 
-    return generateSecretBox([networkId, sharedSecret_ab, sharedSecret_aB], detachedSignatureA, longtermKeys.pk);
+    return generateSecretBox(generateHash([networkId, sharedSecret_ab, sharedSecret_aB]), detachedSignatureA, additionalSecretBoxMessageElement: longtermKeys.pk);
   }
 
   @override
@@ -144,15 +151,15 @@ class Client extends Peer {
   }
 }
 
-class Server extends Peer {
-  Server({ required KeyPair longtermKeys, Uint8List? networkId, KeyPair? ephemeralKeys }) :
+class ServerCrypto extends PeerCrypto {
+  ServerCrypto({ required KeyPair longtermKeys, Uint8List? networkId, KeyPair? ephemeralKeys }) :
     super(longtermKeys: longtermKeys, networkId: networkId, ephemeralKeys: ephemeralKeys);
 
   @override
   Uint8List buildAuthenticate(){
     Uint8List detachedSignatureB = generateDetachedSignature([networkId, detachedSignatureA, remotePk, hashedSharedSecret_ab]);
     
-    return generateSecretBox([networkId, sharedSecret_ab, sharedSecret_aB, sharedSecret_Ab], detachedSignatureB);
+    return generateSecretBox(generateHash([networkId, sharedSecret_ab, sharedSecret_aB, sharedSecret_Ab]), detachedSignatureB);
   }
 
   @override
